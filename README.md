@@ -60,28 +60,36 @@ Prompt KV-Cache (Length L)
 Let $Q \in \mathbb{R}^{H_q \times L \times d}$ and $K, V \in \mathbb{R}^{H_{kv} \times L \times d}$ denote the post-RoPE query, key, and value tensors for a single layer with GQA group factor $G = H_q / H_{kv}$.
 
 ### 1. SnapKV Pooled Observation Scoring
-Define the observation window queries $Q_{\text{obs}} = Q[:, L-W:L, :]$ (default $W=32$). For each KV-head $h \in \{1, \dots, H_{kv}\}$ and grouped query head $g \in \{1, \dots, G\}$:
+Define the observation window queries $Q_{\mathrm{obs}} = Q[:, L-W:L, :]$ (default $W=32$). For each KV-head $h \in \{1, \dots, H_{kv}\}$ and grouped query head $g \in \{1, \dots, G\}$:
 
-$$A_{h,g} = \operatorname{softmax}_{\text{fp32}}\!\left(\frac{Q_{\text{obs}}^{(h,g)} (K^{(h)})^\top}{\sqrt{d}} + M_{\text{causal}}\right) \in \mathbb{R}^{W \times L}$$
+$$
+A_{h,g} = \mathrm{softmax}_{\mathrm{fp32}}\left(\frac{Q_{\mathrm{obs}}^{(h,g)} (K^{(h)})^\top}{\sqrt{d}} + M_{\mathrm{causal}}\right) \in \mathbb{R}^{W \times L}
+$$
 
 The per-KV-head importance vector $s_h \in \mathbb{R}^{L}$ aggregates across the GQA group and observation window:
 
-$$s_h(j) = \frac{1}{G} \sum_{g=1}^{G} \sum_{i=1}^{W} A_{h,g}(i, j)$$
+$$
+s_h(j) = \frac{1}{G} \sum_{g=1}^{G} \sum_{i=1}^{W} A_{h,g}(i, j)
+$$
 
 SnapKV applies 1D average pooling with kernel size $k=5$ (padding $2$) over the prefix $j \in \{0, \dots, L-W-1\}$ to preserve contiguous semantic clusters:
 
-$$\tilde{s}_h = \operatorname{AvgPool1D}_{k=5}\!\big(s_h[0 : L-W]\big)$$
+$$
+\tilde{s}_h = \mathrm{AvgPool1D}_{k=5}\left(s_h[0 : L-W]\right)
+$$
 
 The retained index set $\mathcal{I}_h$ selects the top $B - W$ prefix indices sorted in ascending order (preserving causal order) concatenated with the trailing observation window $\{L-W, \dots, L-1\}$.
 
 ### 2. H2O Heavy-Hitter Accumulation
 H2O maintains a running FP32 importance buffer $S_h^{(t)} \in \mathbb{R}^{|\mathcal{C}_t|}$ per KV-head:
-- **Prefill initialization ($t=0$):** Computed memory-safely via the trailing $W_{\text{init}}=128$ queries ($O(128 \cdot L)$ memory) with causal masking and GQA group aggregation.
+- **Prefill initialization ($t=0$):** Computed memory-safely via the trailing $W_{\mathrm{init}}=128$ queries ($O(128 \cdot L)$ memory) with causal masking and GQA group aggregation.
 - **Autoregressive decode ($t \ge 1$):** For the newly decoded query $q_t \in \mathbb{R}^{H_q \times 1 \times d}$:
 
-$$S_h^{(t)} = \operatorname{concat}\!\big(S_h^{(t-1)},\, 0\big) + \frac{1}{G}\sum_{g=1}^{G} \operatorname{softmax}_{\text{fp32}}\!\left(\frac{q_t^{(h,g)} (K_t^{(h)})^\top}{\sqrt{d}}\right)$$
+$$
+S_h^{(t)} = \mathrm{concat}\left(S_h^{(t-1)}, \; 0\right) + \frac{1}{G}\sum_{g=1}^{G} \mathrm{softmax}_{\mathrm{fp32}}\left(\frac{q_t^{(h,g)} (K_t^{(h)})^\top}{\sqrt{d}}\right)
+$$
 
-Whenever $|\mathcal{C}_t| > B$, H2O retains $\text{sink\_size}=4$ initial tokens, the top $B - 4 - R$ Heavy-Hitter tokens from the middle region ranked by $S_h^{(t)}$, and the most recent $R$ tokens, gathering $K$, $V$, and $S_h^{(t)}$ with the identical index set.
+Whenever $|\mathcal{C}_t| > B$, H2O retains $\mathrm{sink\_size}=4$ initial tokens, the top $B - 4 - R$ Heavy-Hitter tokens from the middle region ranked by $S_h^{(t)}$, and the most recent $R$ tokens, gathering $K$, $V$, and $S_h^{(t)}$ with the identical index set.
 
 ---
 
